@@ -1,14 +1,32 @@
 #include <windows.networking.sockets.h>
 #include <iostream>
 #include <fstream>
+#include <string>
+#include <list>
 using namespace std;
+#define PACKET_SIZE 40
 #pragma comment(lib, "Ws2_32.lib")
+
+void convertStringtoCharArr(string s, char* c) {
+	int i = 0;
+	while(i < s.length() && i < PACKET_SIZE) {
+		c[i] = s.at(i);
+		i++;
+	}
+	if (i >= PACKET_SIZE) {
+		c[i - 1] = '\0';
+	}
+	else {
+		c[i] = '\0';
+	}
+}
 
 void main() {
 
-	ifstream file("ff.txt");
-	if (file.is_open()) {
-		cout << "File could not be found" << endl;
+
+	ifstream file("katl-kefd-B737-700.txt");
+	if (!file.is_open()) {
+		cout << "ERROR: File could not be found" << endl;
 		return;
 	}
 
@@ -19,32 +37,42 @@ void main() {
 		return;
 	}
 	//create client socket
-	SOCKET ClientSocket;
-	ClientSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-	if (ClientSocket == INVALID_SOCKET) {
+	SOCKET ServerSocket;
+	ServerSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+	if (ServerSocket == INVALID_SOCKET) {
 		WSACleanup();
-		std::cout << "ERROR: Failed to create ClientSocket" << std::endl;
+		std::cout << "ERROR: Failed to create Server Socket" << std::endl;
 		return;
 	}
-
 	//Connect socket to specified server
-	sockaddr_in CliAddr;
-	CliAddr.sin_family = AF_INET; //Address family type itnernet
-	CliAddr.sin_port = htons(27000); //port (host to network conversion)
-	CliAddr.sin_addr.s_addr = inet_addr("127.0.0.1"); //IP address
-
 	sockaddr_in SvrAddr;
-	char sendbuffer[] = "Hello World\0";
+	SvrAddr.sin_family = AF_INET; //Address family type itnernet
+	SvrAddr.sin_port = htons(27000); //port (host to network conversion)
+	SvrAddr.sin_addr.s_addr = inet_addr("127.0.0.1"); //IP address
 	int sizeAddr = sizeof(SvrAddr);
-	sendto(ClientSocket, sendbuffer, 13, 0, (struct sockaddr*)&CliAddr, sizeof(CliAddr));
-	std::cout << "Sent." << std::endl;
+
+
+	string line;
+	getline(file, line);
+	//cutting off padding
+	string substring = line.substr(line.find(",")+1);
+	char sendbuffer[PACKET_SIZE];
+	convertStringtoCharArr(substring, sendbuffer);
+
+	while (!file.eof()) {
+		//cout << sendbuffer << endl;
+		sendto(ServerSocket, sendbuffer, PACKET_SIZE, 0, (struct sockaddr*)&SvrAddr, sizeAddr);
+
+		getline(file, line);
+		//cutting off padding
+		line = line.substr(1);
+		convertStringtoCharArr(line, sendbuffer);
+	}
+	/*
 	char recvbuffer[14];
-	//"Hello World\0"
-	std::cout << "Waiting..." << std::endl;
-	recvfrom(ClientSocket, recvbuffer, 14, 0, (struct sockaddr*)&SvrAddr, &sizeAddr);
-	std::cout << recvbuffer << std::endl;
-
-
-	closesocket(ClientSocket);
+	recvfrom(ServerSocket, recvbuffer, 14, 0, (struct sockaddr*)&SvrAddr, &sizeAddr);
+	*/
+	closesocket(ServerSocket);
 	WSACleanup();
+	
 }
