@@ -2,18 +2,24 @@
 #include <iostream>
 #include <fstream>
 #include <string>
-#include <list>
 using namespace std;
-#define PACKET_SIZE 40
+//max date length is 19, 20 for string terminator
+#define MAX_DATE_SIZE 20
+#define PACKET_SIZE MAX_DATE_SIZE + sizeof(double)
 #pragma comment(lib, "Ws2_32.lib")
 
-void convertStringtoCharArr(string s, char* c) {
+struct packet {
+	char time[MAX_DATE_SIZE];
+	double fuel;
+};
+
+void convertStringtoCharArr(string s, char* c, int arraysize) {
 	int i = 0;
-	while(i < s.length() && i < PACKET_SIZE) {
+	while(i < s.length() && i < arraysize) {
 		c[i] = s.at(i);
 		i++;
 	}
-	if (i >= PACKET_SIZE) {
+	if (i >= arraysize) {
 		c[i - 1] = '\0';
 	}
 	else {
@@ -21,20 +27,40 @@ void convertStringtoCharArr(string s, char* c) {
 	}
 }
 
-void main() {
+int main() {
+	//int filenum = rand() % 4;
+	int filenum = 0;
+	string filename = "";
+	switch (filenum) {
+		case 0:
+			filename = "katl-kefd-B737-700.txt";
+			break;
+		case 1:
+			filename = "Telem_2023_3_12 14_56_40.txt";
+			break;
+		case 2:
+			filename = "Telem_2023_3_12 16_26_4.txt";
+			break;
+		case 3:
+			filename = "Telem_czba-cykf-pa28-w2_2023_3_1 12_31_27.txt";
+			break;
+		default:
+			filename = "error";
+			break;
+	}
 
 
-	ifstream file("katl-kefd-B737-700.txt");
+	ifstream file(filename);
 	if (!file.is_open()) {
 		cout << "ERROR: File could not be found" << endl;
-		return;
+		return 1;
 	}
 
 	//starts Winsock DLLs
 	WSADATA wsaData;
 	if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
 		std::cout << "ERROR: Failed to start WSA" << std::endl;
-		return;
+		return 2;
 	}
 	//create client socket
 	SOCKET ServerSocket;
@@ -42,7 +68,7 @@ void main() {
 	if (ServerSocket == INVALID_SOCKET) {
 		WSACleanup();
 		std::cout << "ERROR: Failed to create Server Socket" << std::endl;
-		return;
+		return 3;
 	}
 	//Connect socket to specified server
 	sockaddr_in SvrAddr;
@@ -51,22 +77,48 @@ void main() {
 	SvrAddr.sin_addr.s_addr = inet_addr("127.0.0.1"); //IP address
 	int sizeAddr = sizeof(SvrAddr);
 
-
 	string line;
 	getline(file, line);
-	//cutting off padding
-	string substring = line.substr(line.find(",")+1);
-	char sendbuffer[PACKET_SIZE];
-	convertStringtoCharArr(substring, sendbuffer);
+
+	//cutting off row headers
+	line = line.substr(line.find(",")+1);
+	int comma = line.find(",");
+
+	//substr(starting index inclusive, ending index exclusive)
+	string date = line.substr(0, comma);
+	
+	packet send;
+	convertStringtoCharArr(date, send.time, MAX_DATE_SIZE);
+	
+
+	string fuelText = line.substr(comma + 1);
+	//cut off characters after fuel number
+	fuelText = fuelText.substr(0, fuelText.length() - 2);
+	double fuelnum = stod(fuelText);
+	send.fuel = fuelnum;
+
+	sendto(ServerSocket, (char*) & send, PACKET_SIZE, 0, (struct sockaddr*)&SvrAddr, sizeAddr);
+	
 
 	while (!file.eof()) {
-		//cout << sendbuffer << endl;
-		sendto(ServerSocket, sendbuffer, PACKET_SIZE, 0, (struct sockaddr*)&SvrAddr, sizeAddr);
-
 		getline(file, line);
-		//cutting off padding
-		line = line.substr(1);
-		convertStringtoCharArr(line, sendbuffer);
+		if (line != " "){ //ignore empty line(s)
+			//cutting off beginnning comma
+			line = line.substr(1);
+
+			comma = line.find(",");
+			date = line.substr(0, comma);
+			convertStringtoCharArr(date, send.time, MAX_DATE_SIZE);
+
+
+			fuelText = line.substr(comma + 1);
+			//cut off characters after fuel number
+			fuelText = fuelText.substr(0, fuelText.length() - 2);
+			double fuelnum = stod(fuelText);
+			send.fuel = fuelnum;
+
+			sendto(ServerSocket, (char*)&send, PACKET_SIZE, 0, (struct sockaddr*)&SvrAddr, sizeAddr);
+		}
 	}
 	/*
 	char recvbuffer[14];
@@ -74,5 +126,5 @@ void main() {
 	*/
 	closesocket(ServerSocket);
 	WSACleanup();
-	
+	return 0;
 }
