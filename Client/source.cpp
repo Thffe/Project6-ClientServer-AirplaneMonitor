@@ -2,6 +2,8 @@
 #include <iostream>
 #include <fstream>
 #include <string>
+#include <thread>
+#include <chrono>
 using namespace std;
 //max date length is 19, 20 for string terminator
 #define MAX_DATE_SIZE 20
@@ -141,6 +143,9 @@ int main(int argc, char* argv[]) {
 			fuelText = fuelText.substr(0, fuelText.length() - 2);
 			double fuelnum = stod(fuelText);
 			sendPkt.fuel = fuelnum;
+
+			//wait for 1 second
+			this_thread::sleep_for(chrono::seconds(1));
 
 			send(ClientSocket, (char*)&sendPkt, PACKET_SIZE, 0);
 		}
