@@ -4,6 +4,7 @@
 #include <string>
 #include <thread>
 #include <chrono>
+#include <random>
 using namespace std;
 //max date length is 19, 20 for string terminator
 #define MAX_DATE_SIZE 20
@@ -47,7 +48,13 @@ int main(int argc, char* argv[]) {
 	}
 	cout << serverIP << endl;
 	//int filenum = rand() % 4;
+
 	int filenum = 0;
+	random_device rd;
+	mt19937 gen(rd());
+	uniform_int_distribution<> uid(0, 3);
+	filenum = uid(gen);
+	
 	string filename = "";
 	switch (filenum) {
 		case 0:
@@ -63,7 +70,7 @@ int main(int argc, char* argv[]) {
 			filename = "Telem_czba-cykf-pa28-w2_2023_3_1 12_31_27.txt";
 			break;
 		default:
-			filename = "error";
+			filename = "Error";
 			break;
 	}
 
