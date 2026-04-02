@@ -7,7 +7,11 @@ using namespace std;
 #define MAX_DATE_SIZE 20
 #define PACKET_SIZE MAX_DATE_SIZE + sizeof(double)
 #pragma comment(lib, "Ws2_32.lib")
-
+/*
+Ella Kubica
+Client for Project 6 Part 2
+CSCN73060
+*/
 struct packet {
 	char time[MAX_DATE_SIZE];
 	double fuel;
@@ -70,24 +74,31 @@ int main(int argc, char* argv[]) {
 
 	//starts Winsock DLLs
 	WSADATA wsaData;
-	if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+	if (WSAStartup(MAKEWORD(2, 2), &wsaData) == SOCKET_ERROR) {
 		std::cout << "ERROR: Failed to start WSA" << std::endl;
 		return 2;
 	}
 	//create client socket
-	SOCKET ServerSocket;
-	ServerSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-	if (ServerSocket == INVALID_SOCKET) {
+	SOCKET ClientSocket;
+	ClientSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+	if (ClientSocket == INVALID_SOCKET) {
 		WSACleanup();
-		std::cout << "ERROR: Failed to create Server Socket" << std::endl;
+		std::cout << "ERROR: Failed to create Client Socket" << std::endl;
 		return 3;
 	}
 	//Connect socket to specified server
 	sockaddr_in SvrAddr;
 	SvrAddr.sin_family = AF_INET; //Address family type itnernet
 	SvrAddr.sin_port = htons(27000); //port (host to network conversion)
-	SvrAddr.sin_addr.s_addr = inet_addr((char*)serverIP); //IP address
+	SvrAddr.sin_addr.s_addr = inet_addr(serverIP); //IP address
 	int sizeAddr = sizeof(SvrAddr);
+
+	cout << "Waiting for Connection..." << endl;
+	if (connect(ClientSocket, (struct sockaddr*)&SvrAddr, sizeof(SvrAddr)) == SOCKET_ERROR) {
+		cout << "ERROR: Failed to connect" << endl;
+		return 4;
+	}
+
 
 	cout << "Sending..." << endl;
 
@@ -101,17 +112,17 @@ int main(int argc, char* argv[]) {
 	//substr(starting index inclusive, ending index exclusive)
 	string date = line.substr(0, comma);
 	
-	packet send;
-	convertStringtoCharArr(date, send.time, MAX_DATE_SIZE);
+	packet sendPkt;
+	convertStringtoCharArr(date, sendPkt.time, MAX_DATE_SIZE);
 	
 
 	string fuelText = line.substr(comma + 1);
 	//cut off characters after fuel number
 	fuelText = fuelText.substr(0, fuelText.length() - 2);
 	double fuelnum = stod(fuelText);
-	send.fuel = fuelnum;
+	sendPkt.fuel = fuelnum;
 
-	sendto(ServerSocket, (char*) & send, PACKET_SIZE, 0, (struct sockaddr*)&SvrAddr, sizeAddr);
+	send(ClientSocket, (char*)&sendPkt, PACKET_SIZE, 0);
 	
 
 	while (!file.eof()) {
@@ -122,23 +133,20 @@ int main(int argc, char* argv[]) {
 
 			comma = line.find(",");
 			date = line.substr(0, comma);
-			convertStringtoCharArr(date, send.time, MAX_DATE_SIZE);
+			convertStringtoCharArr(date, sendPkt.time, MAX_DATE_SIZE);
 
 
 			fuelText = line.substr(comma + 1);
 			//cut off characters after fuel number
 			fuelText = fuelText.substr(0, fuelText.length() - 2);
 			double fuelnum = stod(fuelText);
-			send.fuel = fuelnum;
+			sendPkt.fuel = fuelnum;
 
-			sendto(ServerSocket, (char*)&send, PACKET_SIZE, 0, (struct sockaddr*)&SvrAddr, sizeAddr);
+			send(ClientSocket, (char*)&sendPkt, PACKET_SIZE, 0);
 		}
 	}
-	/*
-	char recvbuffer[14];
-	recvfrom(ServerSocket, recvbuffer, 14, 0, (struct sockaddr*)&SvrAddr, &sizeAddr);
-	*/
-	closesocket(ServerSocket);
+	
+	closesocket(ClientSocket);
 	WSACleanup();
 	return 0;
 }
