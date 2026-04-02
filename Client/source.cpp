@@ -27,7 +27,19 @@ void convertStringtoCharArr(string s, char* c, int arraysize) {
 	}
 }
 
-int main() {
+int main(int argc, char* argv[]) {
+	char* serverIP;
+	char localhostIP[] = "127.0.0.1";
+	//255.255.255.255
+	//if an IP address is provided
+	if (argc >= 2) {
+		serverIP = argv[1];
+	}
+	//if no arguement is provided
+	else {
+		serverIP = localhostIP;
+	}
+	cout << serverIP << endl;
 	//int filenum = rand() % 4;
 	int filenum = 0;
 	string filename = "";
@@ -74,8 +86,10 @@ int main() {
 	sockaddr_in SvrAddr;
 	SvrAddr.sin_family = AF_INET; //Address family type itnernet
 	SvrAddr.sin_port = htons(27000); //port (host to network conversion)
-	SvrAddr.sin_addr.s_addr = inet_addr("127.0.0.1"); //IP address
+	SvrAddr.sin_addr.s_addr = inet_addr((char*)serverIP); //IP address
 	int sizeAddr = sizeof(SvrAddr);
+
+	cout << "Sending..." << endl;
 
 	string line;
 	getline(file, line);
