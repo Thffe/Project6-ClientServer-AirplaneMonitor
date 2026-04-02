@@ -46,8 +46,6 @@ int main(int argc, char* argv[]) {
 	else {
 		serverIP = localhostIP;
 	}
-	cout << serverIP << endl;
-	//int filenum = rand() % 4;
 
 	int filenum = 0;
 	random_device rd;
@@ -74,7 +72,7 @@ int main(int argc, char* argv[]) {
 			break;
 	}
 
-
+	cout << "Opening file: " << filename << endl;
 	ifstream file(filename);
 	if (!file.is_open()) {
 		cout << "ERROR: File could not be found" << endl;
@@ -102,7 +100,7 @@ int main(int argc, char* argv[]) {
 	SvrAddr.sin_addr.s_addr = inet_addr(serverIP); //IP address
 	int sizeAddr = sizeof(SvrAddr);
 
-	cout << "Waiting for Connection..." << endl;
+	cout << "Looking for Connection at " << serverIP << endl;
 	if (connect(ClientSocket, (struct sockaddr*)&SvrAddr, sizeof(SvrAddr)) == SOCKET_ERROR) {
 		cout << "ERROR: Failed to connect" << endl;
 		return 4;
@@ -157,7 +155,7 @@ int main(int argc, char* argv[]) {
 			send(ClientSocket, (char*)&sendPkt, PACKET_SIZE, 0);
 		}
 	}
-	
+	cout << "Done Sending" << endl;
 	closesocket(ClientSocket);
 	WSACleanup();
 	return 0;
