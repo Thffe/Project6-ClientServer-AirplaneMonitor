@@ -8,17 +8,20 @@
 using namespace std;
 //max date length is 19, 20 for string terminator
 #define MAX_DATE_SIZE 20
-#define PACKET_SIZE MAX_DATE_SIZE + sizeof(double)
+#define PACKET_SIZE sizeof(packet)
 #pragma comment(lib, "Ws2_32.lib")
 /*
 Ella Kubica
 Client for Project 6 Part 2
 CSCN73060
 */
+#pragma pack(push, 1)
 struct packet {
+	int planeId;
 	char time[MAX_DATE_SIZE];
 	double fuel;
 };
+#pragma pack(pop)
 
 void convertStringtoCharArr(string s, char* c, int arraysize) {
 	int i = 0;
@@ -34,18 +37,51 @@ void convertStringtoCharArr(string s, char* c, int arraysize) {
 	}
 }
 
+bool sendAll(SOCKET sock, const char* buffer, int totalBytes) {
+	int sent = 0;
+	while (sent < totalBytes) {
+		int result = send(sock, buffer + sent, totalBytes - sent, 0);
+		if (result == SOCKET_ERROR) {
+			return false;
+		}
+		sent += result;
+	}
+	return true;
+}
+
+bool recvAll(SOCKET sock, char* buffer, int totalBytes) {
+	int received = 0;
+	while (received < totalBytes) {
+		int result = recv(sock, buffer + received, totalBytes - received, 0);
+		if (result <= 0) {
+			return false;
+		}
+		received += result;
+	}
+	return true;
+}
+
 int main(int argc, char* argv[]) {
-	char* serverIP;
+
 	char localhostIP[] = "127.0.0.1";
+	char* serverIP = localhostIP;
+	int serverPort = 27000;
 	//255.255.255.255
 	//if an IP address is provided
 	if (argc >= 2) {
 		serverIP = argv[1];
 	}
-	//if no arguement is provided
-	else {
-		serverIP = localhostIP;
+	if (argc >= 3) {
+		serverPort = atoi(argv[2]);
+		if (serverPort <= 0) {
+			cout << "ERROR: Invalid port number" << endl;
+			return 1;
+		}
 	}
+	////if no arguement is provided
+	//else {
+	//	serverIP = localhostIP;
+	//}
 
 	int filenum = 0;
 	random_device rd;
@@ -96,16 +132,26 @@ int main(int argc, char* argv[]) {
 	//Connect socket to specified server
 	sockaddr_in SvrAddr;
 	SvrAddr.sin_family = AF_INET; //Address family type itnernet
-	SvrAddr.sin_port = htons(27000); //port (host to network conversion)
+	SvrAddr.sin_port = htons(serverPort); //port (host to network conversion)
 	SvrAddr.sin_addr.s_addr = inet_addr(serverIP); //IP address
 	int sizeAddr = sizeof(SvrAddr);
 
-	cout << "Looking for Connection at " << serverIP << endl;
+	cout << "Looking for Connection at " << serverIP << ":" << serverPort << endl;
 	if (connect(ClientSocket, (struct sockaddr*)&SvrAddr, sizeof(SvrAddr)) == SOCKET_ERROR) {
 		cout << "ERROR: Failed to connect" << endl;
 		return 4;
 	}
 
+	int networkPlaneId = 0;
+	if (!recvAll(ClientSocket, reinterpret_cast<char*>(&networkPlaneId), sizeof(networkPlaneId))) {
+		cout << "ERROR: Failed to receive assigned Plane ID from server" << endl;
+		closesocket(ClientSocket);
+		WSACleanup();
+		return 5;
+	}
+
+	int assignedPlaneId = ntohl(networkPlaneId);
+	cout << "Assigned Plane ID: " << assignedPlaneId << endl;
 
 	cout << "Sending..." << endl;
 
@@ -128,9 +174,14 @@ int main(int argc, char* argv[]) {
 	fuelText = fuelText.substr(0, fuelText.length() - 2);
 	double fuelnum = stod(fuelText);
 	sendPkt.fuel = fuelnum;
+	sendPkt.planeId = assignedPlaneId;
 
-	send(ClientSocket, (char*)&sendPkt, PACKET_SIZE, 0);
-	
+	if (!sendAll(ClientSocket, reinterpret_cast<const char*>(&sendPkt), PACKET_SIZE)) {
+		cout << "ERROR: Failed to send first packet" << endl;
+		closesocket(ClientSocket);
+		WSACleanup();
+		return 6;
+	}
 
 	while (!file.eof()) {
 		getline(file, line);
@@ -148,11 +199,17 @@ int main(int argc, char* argv[]) {
 			fuelText = fuelText.substr(0, fuelText.length() - 2);
 			double fuelnum = stod(fuelText);
 			sendPkt.fuel = fuelnum;
+			sendPkt.planeId = assignedPlaneId;
 
 			//wait for 1 second
 			this_thread::sleep_for(chrono::seconds(1));
 
-			send(ClientSocket, (char*)&sendPkt, PACKET_SIZE, 0);
+			if (!sendAll(ClientSocket, reinterpret_cast<const char*>(&sendPkt), PACKET_SIZE)) {
+				cout << "ERROR: Failed to send packet" << endl;
+				closesocket(ClientSocket);
+				WSACleanup();
+				return 7;
+			}
 		}
 	}
 	cout << "Done Sending" << endl;
