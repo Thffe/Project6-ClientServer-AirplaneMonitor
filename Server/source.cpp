@@ -502,7 +502,6 @@ int main(int argc, char* argv[])
             continue;
         }
 
-        // YOUR PART: one thread per client
         thread handler(clientHandler, clientSocket, clientAddr);
         handler.detach();
     }
