@@ -451,7 +451,7 @@ void updateFlightFromPacket(const TelemetryPacket& packet)
 
     // SUBSEQUENT PACKETS
     int deltaSeconds = parseElapsedSeconds(rec.previousTimestamp, timestamp);
-    double fuelConsumedSinceLast = rec.previousFuel - packet.fuel;// SRV-FUN-003b: Parse remaining fuel — already decoded from the binary
+    double fuelConsumedSinceLast = rec.previousFuel - packet.fuel;// SRV-FUN-003b: Parse remaining fuel â€” already decoded from the binary
 
     // Fuel should never increase mid-flight
     if (fuelConsumedSinceLast < 0.0)    fuelConsumedSinceLast = 0.0;
@@ -500,7 +500,7 @@ void clientHandler(SOCKET clientSocket, sockaddr_in clientAddr)
         (const char*)&recvTimeout, sizeof(recvTimeout));
 
     int malformedCount = 0;
-    constexpr int MAX_MALFORMED = 10; // kick client after 10 consecutive bad packets
+    constexpr int MAX_MALFORMED = 10;
 
     while (true)
     {
@@ -509,7 +509,8 @@ void clientHandler(SOCKET clientSocket, sockaddr_in clientAddr)
 
         if (!ok)
         {
-            logMessage("Client disconnected unexpectedly | Plane ID = " +
+            // This now catches BOTH clean disconnects AND powered-off clients
+            logMessage("Client disconnected | Plane ID = " +
                 to_string(planeId) + " | IP = " + clientIp, LogLevel::WARNING);
             finalizeFlight(planeId, FlightStatus::DISCONNECTED);
             break;
