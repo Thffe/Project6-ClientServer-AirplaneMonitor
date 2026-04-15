@@ -13,6 +13,9 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <condition_variable>
+#include <deque>
+
 
 #pragma comment(lib, "Ws2_32.lib")
 
@@ -65,18 +68,59 @@ struct FlightRecord
 
 map<int, FlightRecord> g_flights;
 mutex g_flightsMutex;
-mutex g_consoleMutex;
 mutex g_fileMutex;
 
 atomic<int> g_nextPlaneId{ 1 };
 atomic<bool> g_serverRunning{ true };
 
 
+//async print queue
+struct PrintQueue
+{
+    deque<string>      items;
+    mutex              mtx;
+    condition_variable cv;
+    bool               done = false;
+
+    void push(string msg)
+    {
+        {
+            lock_guard<mutex> lk(mtx);
+            items.push_back(move(msg));
+        }
+        cv.notify_one();
+    }
+
+    void drainLoop()
+    {
+        while (true)
+        {
+            unique_lock<mutex> lk(mtx);
+            cv.wait(lk, [this] { return !items.empty() || done; });
+
+            while (!items.empty())
+            {
+                string msg = move(items.front());
+                items.pop_front();
+                lk.unlock();
+                cout << msg << '\n';
+                lk.lock();
+            }
+            if (done && items.empty()) break;
+        }
+    }
+
+    void shutdown()
+    {
+        {
+            lock_guard<mutex> lk(mtx);
+            done = true;
+        }
+        cv.notify_one();
+    }
+} g_printQueue;
+
 //graceful SHUTDOWN
-// Tracks the listening socket globally so the shutdown handler can close it,
-// which causes accept() to fail and breaks the main accept loop cleanly.
-// Addresses the missing graceful shutdown — previously the server could only
-// be killed by force, risking incomplete log file writes.
 SOCKET g_listenSocket = INVALID_SOCKET;
 
 // when user hits Ctrl+C or closes window.
@@ -146,12 +190,7 @@ string currentDateTimeString()
 // readable format so the operator can quickly understand system status."
 enum class LogLevel { INFO, WARNING, ERR };
 
-//
-//void logMessage(const string& msg)
-//{
-//    lock_guard<mutex> lock(g_consoleMutex);
-//    cout << "[" << currentDateTimeString() << "] " << msg << endl;
-//}
+
 void logMessage(const string& msg, LogLevel level = LogLevel::INFO)
 {
     string tag;
@@ -162,8 +201,8 @@ void logMessage(const string& msg, LogLevel level = LogLevel::INFO)
     case LogLevel::ERR:     tag = "[ERROR]  "; break;
     }
 
-    lock_guard<mutex> lock(g_consoleMutex);
-    cout << "[" << currentDateTimeString() << "] " << tag << msg << endl;
+    g_printQueue.push("[" + currentDateTimeString() + "] " + tag + msg);
+
 }
 
 
@@ -173,10 +212,7 @@ bool recvAll(SOCKET sock, char* buffer, int totalBytes)
     while (received < totalBytes)
     {
         int result = recv(sock, buffer + received, totalBytes - received, 0);
-        if (result <= 0)
-        {
-            return false;
-        }
+        if (result <= 0)    return false;
         received += result;
     }
     return true;
@@ -188,10 +224,7 @@ bool sendAll(SOCKET sock, const char* buffer, int totalBytes)
     while (sent < totalBytes)
     {
         int result = send(sock, buffer + sent, totalBytes - sent, 0);
-        if (result == SOCKET_ERROR)
-        {
-            return false;
-        }
+        if (result == SOCKET_ERROR) return false;        
         sent += result;
     }
     return true;
@@ -215,47 +248,18 @@ string validatePacket(const TelemetryPacket& pkt, int expectedPlaneId)
     {
         char c = pkt.time[i];
         if (c == '\0') { foundNull = true; break; }
-        if (!(isdigit((unsigned char)c) || c == '_' || c == ':' || c == ' '))
-            return "timestamp contains invalid character '" + string(1, c) + "'";
+        if (!(isdigit((unsigned char)c) || c == '_' || c == ':' || c == ' ')) return "timestamp contains invalid character '" + string(1, c) + "'";
         ++timeLen;
     }
-    if (!foundNull)
-        return "timestamp missing null terminator";
-    if (timeLen < 5)
-        return "timestamp too short (" + to_string(timeLen) + " chars)";
+    if (!foundNull) return "timestamp missing null terminator";
+    if (timeLen < 5) return "timestamp too short (" + to_string(timeLen) + " chars)";
 
     // Validate fuel value
-    if (!isfinite(pkt.fuel))
-        return "fuel value is NaN or infinite";
-    if (pkt.fuel < 0.0)
-        return "fuel value is negative (" + to_string(pkt.fuel) + " kg)";
-    if (pkt.fuel > 200000.0)
-        return "fuel value implausibly large (" + to_string(pkt.fuel) + " kg)";
+    if (!isfinite(pkt.fuel)) return "fuel value is NaN or infinite";
+    if (pkt.fuel < 0.0) return "fuel value is negative (" + to_string(pkt.fuel) + " kg)";
+    if (pkt.fuel > 200000.0) return "fuel value implausibly large (" + to_string(pkt.fuel) + " kg)";
 
     return ""; // valid
-}
-
-bool isPrintableTimeString(const char timeBuffer[MAX_DATE_SIZE])
-{
-    bool foundNull = false;
-
-    for (int i = 0; i < MAX_DATE_SIZE; ++i)
-    {
-        char c = timeBuffer[i];
-
-        if (c == '\0')
-        {
-            foundNull = true;
-            break;
-        }
-
-        if (!(isdigit(static_cast<unsigned char>(c)) || c == '_' || c == ':' || c == ' '))
-        {
-            return false;
-        }
-    }
-
-    return foundNull;
 }
 
 int parseElapsedSeconds(const string& previous, const string& current)
@@ -269,82 +273,33 @@ int parseElapsedSeconds(const string& previous, const string& current)
     int prevParsed = sscanf_s(previous.c_str(), "%d_%d_%d %d:%d:%d", &pm, &pd, &py, &ph, &pmin, &ps);
     int currParsed = sscanf_s(current.c_str(), "%d_%d_%d %d:%d:%d", &cm, &cd, &cy, &ch, &cmin, &cs);
 
-    if (prevParsed != 6 || currParsed != 6)
-    {
-        return 1;
-    }
+    if (prevParsed != 6 || currParsed != 6) return 1;
 
-    prevTm.tm_mon = pm - 1;
-    prevTm.tm_mday = pd;
-    prevTm.tm_year = py - 1900;
-    prevTm.tm_hour = ph;
-    prevTm.tm_min = pmin;
-    prevTm.tm_sec = ps;
+    prevTm.tm_mon = pm - 1; prevTm.tm_mday = pd; prevTm.tm_year = py - 1900;
+    prevTm.tm_hour = ph; prevTm.tm_min = pmin; prevTm.tm_sec = ps;
     prevTm.tm_isdst = -1;
 
-    currTm.tm_mon = cm - 1;
-    currTm.tm_mday = cd;
-    currTm.tm_year = cy - 1900;
-    currTm.tm_hour = ch;
-    currTm.tm_min = cmin;
-    currTm.tm_sec = cs;
+    currTm.tm_mon = cm - 1; currTm.tm_mday = cd; currTm.tm_year = cy - 1900;
+    currTm.tm_hour = ch; currTm.tm_min = cmin; currTm.tm_sec = cs;
     currTm.tm_isdst = -1;
 
     time_t prevTime = mktime(&prevTm);
     time_t currTime = mktime(&currTm);
 
-    if (prevTime == -1 || currTime == -1)
-    {
-        return 1;
-    }
+    if (prevTime == -1 || currTime == -1) return 1;
 
     int diff = static_cast<int>(difftime(currTime, prevTime));
     return (diff > 0) ? diff : 1;
 }
 
-
-//log file
-//restarting the server appends correctly without a duplicate header row, and a brand-new file always gets a header.
 bool logFileHasHeader()
 {
     ifstream check(FINAL_LOG_FILE);
-    if (!check.is_open()) return false;     // file doesn't exist yet
+    if (!check.is_open()) return false;
     string firstLine;
     getline(check, firstLine);
-    return !firstLine.empty();              // has content = has header
+    return !firstLine.empty();
 }
-
-//void appendFinalRecordToFile(const FlightRecord& record)
-//{
-//    lock_guard<mutex> lock(g_fileMutex);
-//
-//    static bool headerWritten = false;
-//
-//    ofstream out(FINAL_LOG_FILE, ios::app);
-//    if (!out.is_open())
-//    {
-//        logMessage("ERROR: Could not open final flight log file.");
-//        return;
-//    }
-//
-//    if (!headerWritten)
-//    {
-//        out << "PlaneID,ClientIP,FirstTimestamp,LastTimestamp,ElapsedSeconds,InitialFuel,FinalFuel,FinalAverageConsumption,Status\n";
-//        headerWritten = true;
-//    }
-//
-//    out << record.planeId << ","
-//        << record.clientIp << ","
-//        << record.firstTimestamp << ","
-//        << record.lastTimestamp << ","
-//        << record.elapsedSeconds << ","
-//        << fixed << setprecision(6)
-//        << record.initialFuel << ","
-//        << record.finalFuel << ","
-//        << record.finalAverageConsumption << ","
-//        << statusToString(record.status) << "\n";
-//}
-//
 
 void appendFinalRecordToFile(const FlightRecord& record)
 {
@@ -379,110 +334,173 @@ void appendFinalRecordToFile(const FlightRecord& record)
 
     logMessage("Flight record saved for Plane ID " + to_string(record.planeId) +
         " | Status: " + statusToString(record.status) +
-        " | Avg consumption: " +
-        to_string(record.finalAverageConsumption) + " kg/s");
+        " | Avg consumption: " + to_string(record.finalAverageConsumption) + " kg/s");
 }
 
-
-//// Added columns: Client IP, First Timestamp, Initial Fuel.
-// All value columns now show units in the header (kg, s, kg/s) per SRV-USE-005.
-// Active and completed flights are printed in separate sections so the operator
-// can quickly distinguish live flights from finished ones (SRV-USE-001).
-
-//void printFlightTable()
+//
+//bool isPrintableTimeString(const char timeBuffer[MAX_DATE_SIZE])
 //{
-//    lock_guard<mutex> consoleLock(g_consoleMutex);
-//    lock_guard<mutex> dataLock(g_flightsMutex);
+//    bool foundNull = false;
 //
-//    cout << "\n=====================================================================================\n";
-//    cout << left
-//        << setw(10) << "Plane ID"
-//        << setw(18) << "Elapsed (s)"
-//        << setw(18) << "Fuel (kg)"
-//        << setw(22) << "Avg Cons. (kg/s)"
-//        << setw(18) << "Status"
-//        << "\n";
-//    cout << "-------------------------------------------------------------------------------------\n";
-//
-//    for (const auto& [id, rec] : g_flights)
+//    for (int i = 0; i < MAX_DATE_SIZE; ++i)
 //    {
-//        cout << left
-//            << setw(10) << rec.planeId
-//            << setw(18) << rec.elapsedSeconds
-//            << setw(18) << fixed << setprecision(3) << rec.currentFuel
-//            << setw(22) << fixed << setprecision(6) << rec.runningAverageConsumption
-//            << setw(18) << statusToString(rec.status)
-//            << "\n";
+//        char c = timeBuffer[i];
+//
+//        if (c == '\0')
+//        {
+//            foundNull = true;
+//            break;
+//        }
+//
+//        if (!(isdigit(static_cast<unsigned char>(c)) || c == '_' || c == ':' || c == ' '))
+//        {
+//            return false;
+//        }
 //    }
 //
-//    cout << "=====================================================================================\n\n";
+//    return foundNull;
 //}
+//
+//int parseElapsedSeconds(const string& previous, const string& current)
+//{
+//    tm prevTm{};
+//    tm currTm{};
+//
+//    int pm, pd, py, ph, pmin, ps;
+//    int cm, cd, cy, ch, cmin, cs;
+//
+//    int prevParsed = sscanf_s(previous.c_str(), "%d_%d_%d %d:%d:%d", &pm, &pd, &py, &ph, &pmin, &ps);
+//    int currParsed = sscanf_s(current.c_str(), "%d_%d_%d %d:%d:%d", &cm, &cd, &cy, &ch, &cmin, &cs);
+//
+//    if (prevParsed != 6 || currParsed != 6)
+//    {
+//        return 1;
+//    }
+//
+//    prevTm.tm_mon = pm - 1;
+//    prevTm.tm_mday = pd;
+//    prevTm.tm_year = py - 1900;
+//    prevTm.tm_hour = ph;
+//    prevTm.tm_min = pmin;
+//    prevTm.tm_sec = ps;
+//    prevTm.tm_isdst = -1;
+//
+//    currTm.tm_mon = cm - 1;
+//    currTm.tm_mday = cd;
+//    currTm.tm_year = cy - 1900;
+//    currTm.tm_hour = ch;
+//    currTm.tm_min = cmin;
+//    currTm.tm_sec = cs;
+//    currTm.tm_isdst = -1;
+//
+//    time_t prevTime = mktime(&prevTm);
+//    time_t currTime = mktime(&currTm);
+//
+//    if (prevTime == -1 || currTime == -1)
+//    {
+//        return 1;
+//    }
+//
+//    int diff = static_cast<int>(difftime(currTime, prevTime));
+//    return (diff > 0) ? diff : 1;
+//}
+//
+//
+////log file
+////restarting the server appends correctly without a duplicate header row, and a brand-new file always gets a header.
+//bool logFileHasHeader()
+//{
+//    ifstream check(FINAL_LOG_FILE);
+//    if (!check.is_open()) return false;     // file doesn't exist yet
+//    string firstLine;
+//    getline(check, firstLine);
+//    return !firstLine.empty();              // has content = has header
+//}
+//
+//
+//void appendFinalRecordToFile(const FlightRecord& record)
+//{
+//    lock_guard<mutex> lock(g_fileMutex);
+//
+//    bool needHeader = !logFileHasHeader();
+//
+//    ofstream out(FINAL_LOG_FILE, ios::app);
+//    if (!out.is_open())
+//    {
+//        logMessage("Could not open final flight log file: " + FINAL_LOG_FILE, LogLevel::ERR);
+//        return;
+//    }
+//
+//    if (needHeader)
+//    {
+//        out << "PlaneID,ClientIP,FirstTimestamp,LastTimestamp,"
+//            "ElapsedSeconds,InitialFuel_kg,FinalFuel_kg,"
+//            "FinalAvgConsumption_kg_s,Status\n";
+//    }
+//
+//    out << record.planeId << ","
+//        << record.clientIp << ","
+//        << record.firstTimestamp << ","
+//        << record.lastTimestamp << ","
+//        << record.elapsedSeconds << ","
+//        << fixed << setprecision(6)
+//        << record.initialFuel << ","
+//        << record.finalFuel << ","
+//        << record.finalAverageConsumption << ","
+//        << statusToString(record.status) << "\n";
+//
+//    logMessage("Flight record saved for Plane ID " + to_string(record.planeId) +
+//        " | Status: " + statusToString(record.status) +
+//        " | Avg consumption: " +
+//        to_string(record.finalAverageConsumption) + " kg/s");
+//}
+
 
 void printFlightTable()
 {
-    lock_guard<mutex> consoleLock(g_consoleMutex);
-    lock_guard<mutex> dataLock(g_flightsMutex);
-
-    cout << "\n";
-    cout << "====================================================================================="
-        "==========================\n";
-    cout << left
-        << setw(10) << "PlaneID"
-        << setw(18) << "Client IP"
-        << setw(12) << "Time (s)"
-        << setw(16) << "Init Fuel (kg)"
-        << setw(16) << "Fuel Now (kg)"
-        << setw(20) << "Avg Cons (kg/s)"
-        << setw(14) << "Status"
-        << "\n";
-    cout << "-------------------------------------------------------------------------------------"
-        "--------------------------\n";
-
-    bool hasActive = false;
-    bool hasFinished = false;
-
-    // Active flights first
-    for (const auto& [id, rec] : g_flights)
+    ostringstream out;
     {
-        if (rec.status != FlightStatus::ACTIVE) continue;
-        hasActive = true;
-        cout << left
-            << setw(10) << rec.planeId
-            << setw(18) << rec.clientIp
-            << setw(12) << rec.elapsedSeconds
-            << setw(16) << fixed << setprecision(2) << rec.initialFuel
-            << setw(16) << fixed << setprecision(2) << rec.currentFuel
-            << setw(20) << fixed << setprecision(6) << rec.runningAverageConsumption
-            << setw(14) << statusToString(rec.status)
+        lock_guard<mutex> dataLock(g_flightsMutex);
+
+        out << "\n================================================================"
+            "============================\n";
+        out << left
+            << setw(10) << "PlaneID"
+            << setw(18) << "Client IP"
+            << setw(12) << "Time (s)"
+            << setw(16) << "Init Fuel (kg)"
+            << setw(16) << "Fuel Now (kg)"
+            << setw(20) << "Avg Cons (kg/s)"
+            << setw(14) << "Status"
             << "\n";
+        out << "----------------------------------------------------------------"
+            "----------------------------\n";
+
+        if (g_flights.empty())
+        {
+            out << "  (no active flights)\n";
+        }
+        else
+        {
+            for (const auto& [id, rec] : g_flights)
+            {
+                out << left
+                    << setw(10) << rec.planeId
+                    << setw(18) << rec.clientIp
+                    << setw(12) << rec.elapsedSeconds
+                    << setw(16) << fixed << setprecision(2) << rec.initialFuel
+                    << setw(16) << fixed << setprecision(2) << rec.currentFuel
+                    << setw(20) << fixed << setprecision(6) << rec.runningAverageConsumption
+                    << setw(14) << statusToString(rec.status)
+                    << "\n";
+            }
+        }
+        out << "================================================================"
+            "============================\n";
     }
-    if (!hasActive)
-        cout << "  (no active flights)\n";
-
-    cout << "--- Completed / Disconnected "
-        "--------------------------------------------------------------------------\n";
-
-    // Finished flights below the divider
-    for (const auto& [id, rec] : g_flights)
-    {
-        if (rec.status == FlightStatus::ACTIVE) continue;
-        hasFinished = true;
-        cout << left
-            << setw(10) << rec.planeId
-            << setw(18) << rec.clientIp
-            << setw(12) << rec.elapsedSeconds
-            << setw(16) << fixed << setprecision(2) << rec.initialFuel
-            << setw(16) << fixed << setprecision(2) << rec.finalFuel
-            << setw(20) << fixed << setprecision(6) << rec.finalAverageConsumption
-            << setw(14) << statusToString(rec.status)
-            << "\n";
-    }
-    if (!hasFinished)
-        cout << "  (none yet)\n";
-
-    cout << "====================================================================================="
-        "==========================\n\n";
+    g_printQueue.push(out.str());
 }
+
 
 
 void displayThreadFunc()
@@ -513,61 +531,32 @@ void finalizeFlight(int planeId, FlightStatus finalStatus)
     {
         lock_guard<mutex> lock(g_flightsMutex);
         auto it = g_flights.find(planeId);
-        if (it == g_flights.end())
-        {
-            return;
-        }
+        if (it == g_flights.end()) return;
+        
 
         it->second.status = finalStatus;
         it->second.finalFuel = it->second.currentFuel;
         it->second.finalAverageConsumption = it->second.runningAverageConsumption;
         finalCopy = it->second;
+
+        g_flights.erase(it);
     }
 
     appendFinalRecordToFile(finalCopy);
 }
 
-// ======================================================
-// ALBERT SECTION START
-// ======================================================
 
-/*
- * updateFlightFromPacket
- *
- * Called by clientHandler() each time a valid TelemetryPacket is received.
- *
- * Responsibilities (SRV-FUN-002, SRV-FUN-003, SRV-FUN-004):
- *   - Read the packet's planeId, timestamp, and fuel fields
- *   - Parse the timestamp to compute elapsed seconds since the previous packet
- *   - Calculate instantaneous fuel consumed since last packet
- *   - Update the running average consumption: cumulativeFuelConsumed / elapsedSeconds
- *   - Write all results back into the shared FlightRecord (mutex already held)
- *
- * Fuel consumption formula (from SDD):
- *   instantaneous consumption = (prevFuel - currentFuel) / deltaSeconds
- *   running average           = cumulativeFuelConsumed  / totalElapsedSeconds
- *
- * Thread safety: g_flightsMutex is acquired inside this function for the
- * entire duration of the update so no other thread can corrupt the record.
- */
 void updateFlightFromPacket(const TelemetryPacket& packet)
 {
-    // Build a std::string from the null-terminated char array in the packet.
-    // The caller (clientHandler) has already validated that the time field
-    // contains only printable, well-formed characters via isPrintableTimeString().
     string timestamp(packet.time);
 
     lock_guard<mutex> lock(g_flightsMutex);
 
-    // Locate this plane's record in the shared data store.
     auto it = g_flights.find(packet.planeId);
-    if (it == g_flights.end())  return;// Record was never initialised
+    if (it == g_flights.end())  return;
 
     FlightRecord& rec = it->second;
 
-    // FIRST PACKET for this flight
-    // Establish the baseline values; no consumption can be calculated yet
-    // because we have no previous data point to compare against.
     if (!rec.hasFirstPacket)
     {
         rec.hasFirstPacket = true;
@@ -583,11 +572,6 @@ void updateFlightFromPacket(const TelemetryPacket& packet)
     }
 
     // SUBSEQUENT PACKETS
-
-    // SRV-FUN-003a: Parse timing: compute how many seconds have passed
-    // since the previous packet using the timestamps embedded in the data.
-    // parseElapsedSeconds() handles the custom "M_D_Y H:MM:SS" format used
-    // by all four telemetry files and returns a minimum of 1 to avoid /0.
     int deltaSeconds = parseElapsedSeconds(rec.previousTimestamp, timestamp);
     double fuelConsumedSinceLast = rec.previousFuel - packet.fuel;// SRV-FUN-003b: Parse remaining fuel — already decoded from the binary
 
@@ -602,18 +586,14 @@ void updateFlightFromPacket(const TelemetryPacket& packet)
     rec.currentFuel = packet.fuel;
     rec.lastTimestamp = timestamp;
     // SRV-FUN-004c: Recalculate running average consumption (kg/s).
-    if (rec.elapsedSeconds > 0)
-    {
+    if (rec.elapsedSeconds > 0)   
         rec.runningAverageConsumption = rec.cumulativeFuelConsumed / rec.elapsedSeconds;
-    }
+    
     // Advance the sliding window for the next packet comparison.
     rec.previousTimestamp = timestamp;
     rec.previousFuel = packet.fuel;
 }
 
-// ======================================================
-// ALBERT SECTION END
-// ======================================================
 
 void clientHandler(SOCKET clientSocket, sockaddr_in clientAddr)
 {
@@ -621,11 +601,9 @@ void clientHandler(SOCKET clientSocket, sockaddr_in clientAddr)
     inet_ntop(AF_INET, &(clientAddr.sin_addr), ipBuffer, INET_ADDRSTRLEN);
     string clientIp = ipBuffer;
 
-    // Assign unique ID
-    // Support many clients with one handler thread each
+    
     int planeId = g_nextPlaneId.fetch_add(1);
 
-    //logMessage("Client connected from " + clientIp + ". Assigned Plane ID = " + to_string(planeId));
     logMessage("Client connected from " + clientIp +
         " | Assigned Plane ID = " + to_string(planeId), LogLevel::INFO);
     initializeFlightRecord(planeId, clientIp);
@@ -649,15 +627,12 @@ void clientHandler(SOCKET clientSocket, sockaddr_in clientAddr)
 
         if (!ok)
         {
-            //logMessage("Client disconnected unexpectedly. Plane ID = " + to_string(planeId));
             logMessage("Client disconnected unexpectedly | Plane ID = " +
                 to_string(planeId) + " | IP = " + clientIp, LogLevel::WARNING);
             finalizeFlight(planeId, FlightStatus::DISCONNECTED);
             break;
         }
 
-
-        // Returns a description string — empty string means packet is valid.
         string validationError = validatePacket(packet, planeId);
         if (!validationError.empty())
         {
@@ -680,29 +655,6 @@ void clientHandler(SOCKET clientSocket, sockaddr_in clientAddr)
 
         // Reset malformed counter on a good packet
         malformedCount = 0;
-
-        //if (packet.planeId != planeId)
-        //{
-        //    logMessage("Malformed packet rejected: ID mismatch for Plane ID = " + to_string(planeId));
-        //    continue;
-        //}
-
-        //if (!isPrintableTimeString(packet.time))
-        //{
-        //    logMessage("Malformed packet rejected: invalid timestamp for Plane ID = " + to_string(planeId));
-        //    continue;
-        //}
-
-        //if (packet.fuel < 0.0)
-        //{
-        //    logMessage("Malformed packet rejected: negative fuel for Plane ID = " + to_string(planeId));
-        //    continue;
-        //}
-
-        // ============================
-        // ALBERT FUnction called here
-        // parse packet + calculate/store fuel consumption
-        // ============================
         updateFlightFromPacket(packet);
     }
 
@@ -729,12 +681,7 @@ int main(int argc, char* argv[])
 
     if (argc >= 3)
     {
-        //port = atoi(argv[2]);
-        //if (port <= 0)
-        //{
-        //    cout << "ERROR: Invalid port." << endl;
-        //    return 1;
-        //}
+        
         int rawPort = atoi(argv[2]);
         if (!isValidPort(rawPort))
         {
@@ -751,6 +698,8 @@ int main(int argc, char* argv[])
         cout << "[WARN] Could not register console control handler. "
             "Use Ctrl+C to stop (may not shut down cleanly).\n";
     }
+
+    thread printThread([] { g_printQueue.drainLoop(); });
 
 
     WSADATA wsaData{};
@@ -828,6 +777,10 @@ int main(int argc, char* argv[])
     // Print one final table so the operator sees the end state of all flights.
     printFlightTable();
     logMessage("Final flight table printed. Goodbye.");
+
+    g_printQueue.shutdown();
+    if (printThread.joinable())
+        printThread.join();
 
     if (g_listenSocket != INVALID_SOCKET)
         closesocket(g_listenSocket);
