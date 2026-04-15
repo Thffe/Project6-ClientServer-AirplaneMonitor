@@ -116,6 +116,7 @@ bool isValidPort(int port)
 
 
 const string FINAL_LOG_FILE = "final_flight_records.csv";
+const string LOG_FILE = "flight_records.txt";
 
 string statusToString(FlightStatus status)
 {
@@ -423,10 +424,17 @@ void printFlightTable()
     lock_guard<mutex> consoleLock(g_consoleMutex);
     lock_guard<mutex> dataLock(g_flightsMutex);
 
-    cout << "\n";
-    cout << "====================================================================================="
+    ofstream out(LOG_FILE, ios::app);
+    if (!out.is_open())
+    {
+        logMessage("Could not open flight log file: " + LOG_FILE, LogLevel::ERR);
+        return;
+    }
+
+    out << "\n";
+    out << "====================================================================================="
         "==========================\n";
-    cout << left
+    out << left
         << setw(10) << "PlaneID"
         << setw(18) << "Client IP"
         << setw(12) << "Time (s)"
@@ -435,7 +443,7 @@ void printFlightTable()
         << setw(20) << "Avg Cons (kg/s)"
         << setw(14) << "Status"
         << "\n";
-    cout << "-------------------------------------------------------------------------------------"
+    out << "-------------------------------------------------------------------------------------"
         "--------------------------\n";
 
     bool hasActive = false;
@@ -446,7 +454,7 @@ void printFlightTable()
     {
         if (rec.status != FlightStatus::ACTIVE) continue;
         hasActive = true;
-        cout << left
+        out << left
             << setw(10) << rec.planeId
             << setw(18) << rec.clientIp
             << setw(12) << rec.elapsedSeconds
@@ -457,9 +465,9 @@ void printFlightTable()
             << "\n";
     }
     if (!hasActive)
-        cout << "  (no active flights)\n";
+        out << "  (no active flights)\n";
 
-    cout << "--- Completed / Disconnected "
+    out << "--- Completed / Disconnected "
         "--------------------------------------------------------------------------\n";
 
     // Finished flights below the divider
@@ -467,7 +475,7 @@ void printFlightTable()
     {
         if (rec.status == FlightStatus::ACTIVE) continue;
         hasFinished = true;
-        cout << left
+        out << left
             << setw(10) << rec.planeId
             << setw(18) << rec.clientIp
             << setw(12) << rec.elapsedSeconds
@@ -478,9 +486,9 @@ void printFlightTable()
             << "\n";
     }
     if (!hasFinished)
-        cout << "  (none yet)\n";
+        out << "  (none yet)\n";
 
-    cout << "====================================================================================="
+    out << "====================================================================================="
         "==========================\n\n";
 }
 
