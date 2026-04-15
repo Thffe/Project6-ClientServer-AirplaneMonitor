@@ -522,6 +522,8 @@ void finalizeFlight(int planeId, FlightStatus finalStatus)
         it->second.finalFuel = it->second.currentFuel;
         it->second.finalAverageConsumption = it->second.runningAverageConsumption;
         finalCopy = it->second;
+
+        g_flights.erase(it);
     }
 
     appendFinalRecordToFile(finalCopy);
@@ -639,8 +641,12 @@ void clientHandler(SOCKET clientSocket, sockaddr_in clientAddr)
         return;
     }
 
+    DWORD recvTimeout = 10000; // 10 seconds
+    setsockopt(clientSocket, SOL_SOCKET, SO_RCVTIMEO,
+        (const char*)&recvTimeout, sizeof(recvTimeout));
+
     int malformedCount = 0;
-    constexpr int MAX_MALFORMED = 10; // kick client after 10 consecutive bad packets
+    constexpr int MAX_MALFORMED = 10;
 
     while (true)
     {
@@ -649,8 +655,8 @@ void clientHandler(SOCKET clientSocket, sockaddr_in clientAddr)
 
         if (!ok)
         {
-            //logMessage("Client disconnected unexpectedly. Plane ID = " + to_string(planeId));
-            logMessage("Client disconnected unexpectedly | Plane ID = " +
+            // This now catches BOTH clean disconnects AND powered-off clients
+            logMessage("Client disconnected | Plane ID = " +
                 to_string(planeId) + " | IP = " + clientIp, LogLevel::WARNING);
             finalizeFlight(planeId, FlightStatus::DISCONNECTED);
             break;
