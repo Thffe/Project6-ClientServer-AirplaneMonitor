@@ -123,18 +123,15 @@ struct PrintQueue
 //graceful SHUTDOWN
 SOCKET g_listenSocket = INVALID_SOCKET;
 
-// when user hits Ctrl+C or closes window.
-// Sets the global running flag to false and closes the listen socket so the
-// main thread unblocks from accept() and exits the loop cleanly.
+
 BOOL WINAPI consoleCtrlHandler(DWORD signal)
 {
     if (signal == CTRL_C_EVENT || signal == CTRL_CLOSE_EVENT)
     {
-        cout << "\n[SHUTDOWN] Shutdown signal received. Stopping server...\n";
+        g_printQueue.push("\n[SHUTDOWN] Shutdown signal received. Stopping server...");
         g_serverRunning = false;
 
-        // Closing the listen socket forces accept() to return INVALID_SOCKET,
-        // breaking the infinite accept loop in main().
+        
         if (g_listenSocket != INVALID_SOCKET)
         {
             closesocket(g_listenSocket);
@@ -152,7 +149,6 @@ bool isValidIPv4(const string& ip)
     return inet_pton(AF_INET, ip.c_str(), &sa.sin_addr) == 1;
 }
 
-// Returns true if port is in the valid user/registered port range (1–65535).
 bool isValidPort(int port)
 {
     return port >= 1 && port <= 65535;
@@ -337,124 +333,6 @@ void appendFinalRecordToFile(const FlightRecord& record)
         " | Avg consumption: " + to_string(record.finalAverageConsumption) + " kg/s");
 }
 
-//
-//bool isPrintableTimeString(const char timeBuffer[MAX_DATE_SIZE])
-//{
-//    bool foundNull = false;
-//
-//    for (int i = 0; i < MAX_DATE_SIZE; ++i)
-//    {
-//        char c = timeBuffer[i];
-//
-//        if (c == '\0')
-//        {
-//            foundNull = true;
-//            break;
-//        }
-//
-//        if (!(isdigit(static_cast<unsigned char>(c)) || c == '_' || c == ':' || c == ' '))
-//        {
-//            return false;
-//        }
-//    }
-//
-//    return foundNull;
-//}
-//
-//int parseElapsedSeconds(const string& previous, const string& current)
-//{
-//    tm prevTm{};
-//    tm currTm{};
-//
-//    int pm, pd, py, ph, pmin, ps;
-//    int cm, cd, cy, ch, cmin, cs;
-//
-//    int prevParsed = sscanf_s(previous.c_str(), "%d_%d_%d %d:%d:%d", &pm, &pd, &py, &ph, &pmin, &ps);
-//    int currParsed = sscanf_s(current.c_str(), "%d_%d_%d %d:%d:%d", &cm, &cd, &cy, &ch, &cmin, &cs);
-//
-//    if (prevParsed != 6 || currParsed != 6)
-//    {
-//        return 1;
-//    }
-//
-//    prevTm.tm_mon = pm - 1;
-//    prevTm.tm_mday = pd;
-//    prevTm.tm_year = py - 1900;
-//    prevTm.tm_hour = ph;
-//    prevTm.tm_min = pmin;
-//    prevTm.tm_sec = ps;
-//    prevTm.tm_isdst = -1;
-//
-//    currTm.tm_mon = cm - 1;
-//    currTm.tm_mday = cd;
-//    currTm.tm_year = cy - 1900;
-//    currTm.tm_hour = ch;
-//    currTm.tm_min = cmin;
-//    currTm.tm_sec = cs;
-//    currTm.tm_isdst = -1;
-//
-//    time_t prevTime = mktime(&prevTm);
-//    time_t currTime = mktime(&currTm);
-//
-//    if (prevTime == -1 || currTime == -1)
-//    {
-//        return 1;
-//    }
-//
-//    int diff = static_cast<int>(difftime(currTime, prevTime));
-//    return (diff > 0) ? diff : 1;
-//}
-//
-//
-////log file
-////restarting the server appends correctly without a duplicate header row, and a brand-new file always gets a header.
-//bool logFileHasHeader()
-//{
-//    ifstream check(FINAL_LOG_FILE);
-//    if (!check.is_open()) return false;     // file doesn't exist yet
-//    string firstLine;
-//    getline(check, firstLine);
-//    return !firstLine.empty();              // has content = has header
-//}
-//
-//
-//void appendFinalRecordToFile(const FlightRecord& record)
-//{
-//    lock_guard<mutex> lock(g_fileMutex);
-//
-//    bool needHeader = !logFileHasHeader();
-//
-//    ofstream out(FINAL_LOG_FILE, ios::app);
-//    if (!out.is_open())
-//    {
-//        logMessage("Could not open final flight log file: " + FINAL_LOG_FILE, LogLevel::ERR);
-//        return;
-//    }
-//
-//    if (needHeader)
-//    {
-//        out << "PlaneID,ClientIP,FirstTimestamp,LastTimestamp,"
-//            "ElapsedSeconds,InitialFuel_kg,FinalFuel_kg,"
-//            "FinalAvgConsumption_kg_s,Status\n";
-//    }
-//
-//    out << record.planeId << ","
-//        << record.clientIp << ","
-//        << record.firstTimestamp << ","
-//        << record.lastTimestamp << ","
-//        << record.elapsedSeconds << ","
-//        << fixed << setprecision(6)
-//        << record.initialFuel << ","
-//        << record.finalFuel << ","
-//        << record.finalAverageConsumption << ","
-//        << statusToString(record.status) << "\n";
-//
-//    logMessage("Flight record saved for Plane ID " + to_string(record.planeId) +
-//        " | Status: " + statusToString(record.status) +
-//        " | Avg consumption: " +
-//        to_string(record.finalAverageConsumption) + " kg/s");
-//}
-
 
 void printFlightTable()
 {
@@ -616,6 +494,10 @@ void clientHandler(SOCKET clientSocket, sockaddr_in clientAddr)
         closesocket(clientSocket);
         return;
     }
+
+    DWORD recvTimeout = 10000; // 10 seconds
+    setsockopt(clientSocket, SOL_SOCKET, SO_RCVTIMEO,
+        (const char*)&recvTimeout, sizeof(recvTimeout));
 
     int malformedCount = 0;
     constexpr int MAX_MALFORMED = 10; // kick client after 10 consecutive bad packets
